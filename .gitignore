@@ -1,0 +1,40 @@
+# Binaries
+/bin/
+/*.exe
+/*.exe~
+/*.dll
+/*.so
+/*.dylib
+/*.test
+*.out
+
+# Go build artifacts
+*.log
+*.prof
+
+# Dependencies
+/go.sum
+
+# IDE/editor stuff
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Env/config
+.env
+
+# Docker
+*.pid
+*.seed
+*.bak
+*.tmp
+*.lock
+
+# Redis dump (if ever persisted locally)
+dump.rdb
+appendonly.aof

@@ -1,0 +1,18 @@
+api:
+  build: .
+  container_name: jobqueue-api
+  env_file:
+    - .env
+  ports:
+    - "8080:8080"
+  depends_on:
+    - redis
+
+worker:
+  build: .
+  container_name: jobqueue-worker
+  env_file:
+    - .env
+  command: ["/bin/worker"]
+  depends_on:
+    - redis
