@@ -12,8 +12,6 @@
 *.log
 *.prof
 
-# Dependencies
-/go.sum
 
 # IDE/editor stuff
 .vscode/
