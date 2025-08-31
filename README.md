@@ -41,7 +41,7 @@ API  --->  Redis Streams / ZSETs  --->  Worker(s)
 Make sure you have Docker + docker-compose installed.
 
 ```bash
-git clone https://github.com/<your-username>/redis-job-queue.git
+git clone https://github.com/coganka/go-redis-job-queue.git
 cd redis-job-queue
 docker-compose up --build
 ```
