@@ -1,139 +1,99 @@
-# Redis Job Queue (Go)
+# Redis Job Queue
 
-A minimal **distributed job queue** built in **Go** with **Redis**.
-Supports **status tracking, retries with exponential backoff, scheduled jobs, and a dead-letter queue (DLQ)**.
-Inspired by systems like Sidekiq / Celery, simplified for learning and portfolio.
+An asynchronous job queue in Go with concurrent workers, delayed execution, retries, and a dead-letter queue. A small HTTP API accepts work and exposes its state; a separate worker process handles execution.
 
----
+**Go · Redis Streams · Redis Sorted Sets · Gin**
 
-## ✨ Features
+## How a job moves through the system
 
-* REST API to enqueue jobs (`queued` / `scheduled`)
-* Worker pool (goroutines) for concurrent job processing
-* Status tracking: `queued → processing → succeeded / retrying / failed`
-* Automatic retries with exponential backoff
-* Dead-letter queue (DLQ) for exhausted jobs
-* Scheduled jobs (`scheduled_at`) via Redis Sorted Sets
-* Docker + docker-compose support for easy setup
-
----
-
-## 🏗 Architecture
-
-```
-API  --->  Redis Streams / ZSETs  --->  Worker(s)
-           |        |                   |
-           |        |---- RetryMgr <----|
-           |---- Scheduler <------------|
-           |---- DLQ ------------------>|
+```text
+POST /jobs ── immediate ────────────→ Redis Stream → Worker pool
+      │                                   ↑              │
+      └── scheduled → Sorted Set → Scheduler             ├── success → status
+                                          ↑              ├── retry → Sorted Set
+                                    Retry manager ───────┘
+                                                         └── exhausted → DLQ
 ```
 
-* **Streams**: main job pipeline
-* **ZSET**: scheduled and retry queues
-* **Scheduler**: moves due jobs into stream
-* **Retry Manager**: re-enqueues failed jobs with delay
-* **DLQ**: stores jobs that exhausted retries
+Streams provide consumer-group reads and acknowledgements. Sorted sets hold scheduled jobs and retries, using execution time as the score. Job metadata is stored separately in Redis hashes so clients can query progress without reading the queue.
 
----
+## What is implemented
 
-## 🚀 Running with Docker
+- Three worker goroutines in the default worker process.
+- Immediate and scheduled jobs through `POST /jobs`.
+- Status transitions including `queued`, `scheduled`, `processing`, `retrying`, `succeeded`, and `failed`.
+- Exponential-backoff retries with jitter and a default maximum of five attempts.
+- A dead-letter stream for jobs that exhaust their retries.
+- Separate API and worker entry points.
 
-Make sure you have Docker + docker-compose installed.
+The included `echo.process` handler simulates a one-second task. Unknown job types exercise the retry and failure path.
+
+## Run locally
+
+Use **Go 1.23.2 or newer**, Redis 7+, and two terminals. Start Redis locally before launching either process.
 
 ```bash
 git clone https://github.com/coganka/go-redis-job-queue.git
-cd redis-job-queue
-docker-compose up --build
+cd go-redis-job-queue
+go mod download
 ```
 
-Services:
-
-* **API** → [http://localhost:8080](http://localhost:8080)
-* **Worker** → runs in background
-* **Redis** → port 6379
-
----
-
-## 📡 API Usage
-
-### Health Check
+Terminal 1:
 
 ```bash
-curl localhost:8080/healthz | jq
+REDIS_ADDR=localhost:6379 PORT=8080 go run ./cmd/api
 ```
 
-### Enqueue a Job
+Terminal 2:
 
 ```bash
-curl -X POST localhost:8080/jobs \
-  -H "Content-Type: application/json" \
-  -d '{"type":"echo.process","payload":{"msg":"hello"}}' | jq
+REDIS_ADDR=localhost:6379 go run ./cmd/worker
 ```
 
-### Enqueue a Scheduled Job (+15 seconds)
+Configuration is read from process environment variables; `.env` is not loaded by the Go application itself.
+
+| Variable | Default |
+|---|---|
+| `REDIS_ADDR` | `localhost:6379` |
+| `REDIS_DB` | `0` |
+| `STREAM` | `jobs:stream` |
+| `CONSUMER_GROUP` | `jobs:cg` |
+| `PORT` | `8080` |
+
+`API_KEY` exists in configuration but is not enforced by the HTTP handlers.
+
+## Try the job lifecycle
 
 ```bash
-curl -X POST localhost:8080/jobs \
-  -H "Content-Type: application/json" \
-  -d '{"type":"echo.process","payload":{"msg":"delayed"},"scheduled_at":'$(date -v+15S +%s)'}' | jq
+curl -X POST http://localhost:8080/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"echo.process","payload":{"message":"hello"}}'
 ```
 
-### Get Job Status
+The API returns `202` with a job ID. Use that ID to retrieve its status:
 
 ```bash
-curl localhost:8080/jobs/<job-id> | jq
+curl http://localhost:8080/jobs/YOUR_JOB_ID
 ```
 
-Example response:
-
-```json
-{
-  "status": "succeeded",
-  "created_at": "1735503200",
-  "started_at": "1735503201",
-  "finished_at": "1735503202",
-  "attempts": "1",
-  "updated_at": "1735503202"
-}
-```
-
-### View Dead Letter Queue
+To schedule a job, include `scheduled_at` as a future Unix timestamp in seconds. To see retries and the dead-letter queue, submit an unsupported job type:
 
 ```bash
-curl localhost:8080/dlq | jq
+curl -X POST http://localhost:8080/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"demo.unsupported","payload":{}}'
+
+curl http://localhost:8080/dlq
 ```
 
----
+Wait for retries to finish before checking the DLQ. The default backoff takes roughly half a minute, plus scheduler timing and processing overhead.
 
-## ⚙️ Project Structure
+## Read the implementation
 
-```
-cmd/
- ├── api/       # API service (REST endpoints)
- └── worker/    # Worker service (job processor)
+Start with [worker.go](internal/queue/worker.go) for execution, retries, and acknowledgements. [scheduler.go](internal/queue/scheduler.go) and [retry.go](internal/queue/retry.go) move due jobs into the stream; [store.go](internal/store/store.go) persists status.
 
-internal/
- ├── config/    # Env + configuration
- ├── queue/     # Redis queue, worker, retry manager, scheduler
- └── store/     # Job status persistence
-```
+## Current boundaries
 
----
+The native commands above are the supported path documented here. The checked-in Docker files need alignment: the builder uses Go 1.22, the Compose file lacks a Redis service and a modern `services` wrapper, and the worker needs an entrypoint override rather than a command argument to the API entrypoint.
 
-## 📖 Tech Stack
-
-* **Go 1.22**
-* **Redis 7**
-* **Docker + Compose**
-* **Gin** (REST API)
-* **go-redis** (Redis client)
-
----
-
-## 📝 Notes
-
-* This project is for **learning + portfolio**.
-* Not production-ready (no auth, scaling, persistence tuning).
-* Shows backend concepts: **concurrency, retries, scheduling, DLQ**.
-
----
+The queue demonstrates execution and retry mechanics, but does not yet guarantee recovery after worker crashes. Pending-message reclamation, idempotent handlers, and atomic queue transitions are follow-up work. In particular, the worker can acknowledge a message after a failed retry/DLQ write, and multiple scheduler instances can release the same job. The timeout field is metadata only; execution deadlines are not enforced.
